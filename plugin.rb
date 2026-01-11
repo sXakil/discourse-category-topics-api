@@ -20,14 +20,17 @@ after_initialize do
 
   class CustomCategoryTopicSerializer < ApplicationSerializer
 
-    attributes :views,
-               :like_count,
-               :category_id,
+    attributes :id,
+               :slug,
+               :title,
+               :excerpt,
                :image_url,
+               :views,
+               :category_id,
+               :like_count,
                :posts_count,
                :created_at,
-               :visible,
-               :excerpt
+               :visible
     
     has_one :user, serializer: BasicUserSerializer, embed: :objects
     has_many :tags, serializer: TagSerializer, embed: :objects
@@ -60,17 +63,17 @@ after_initialize do
     end
 
     def topics
+      year = params[:year].to_i
+      raise Discourse::NotFound if year < 2000 or year > Time.now.year
+
       category = Category.find_by(id: params[:id])
-      
       raise Discourse::NotFound unless category
       
       guardian.ensure_can_see!(category)
       
-      page = params[:page].to_i
-      page_size = [(params[:page_size] || 30).to_i, 100].min
-      
       query = Topic
         .where(category_id: category.id)
+        .where(created_at: DateTime.new(year).beginning_of_year..DateTime.new(year).end_of_year)
         .where(visible: true)
         .where(deleted_at: nil)
       
@@ -98,23 +101,48 @@ after_initialize do
         query = query.where('pinned_at IS NOT NULL')
       end
 
-      total_count = query.count
+      topics = query.includes(:user, :tags)
+      
+      # Group topics by month
+      grouped_topics = {}
+      topics.each do |topic|
+        month_key = topic.created_at.strftime('%Y-%m')
+        year_from_topic = topic.created_at.year
+        
+        # Only include topics from the specified year
+        if year_from_topic == year
+          grouped_topics[month_key] ||= []
+          grouped_topics[month_key] << topic
+        end
+      end
 
-      topics = query
-        .offset(page * page_size)
-        .limit(page_size)
-        .includes(:user, :category, :tags)
+      total_count = grouped_topics.values.flatten.count
 
-      # Serialize the response
+      # Serialize the grouped response
+      serialized_topics = {}
+      grouped_topics.each do |month_key, month_topics|
+        serialized_topics[month_key] = serialize_data(month_topics, CustomCategoryTopicSerializer, scope: guardian)
+      end
+
+      stats = {}
+      end_year = [year + 2, Time.now.year].min
+      start_year = end_year - 4
+      
+      (start_year..end_year).each do |y|
+        yearly_count = Topic
+          .where(category_id: category.id)
+          .where(created_at: DateTime.new(y).beginning_of_year..DateTime.new(y).end_of_year)
+          .where(visible: true)
+          .where(deleted_at: nil)
+          .count
+        stats[y] = yearly_count
+      end
+
       render json: {
-              topics: serialize_data(topics, CustomCategoryTopicSerializer, scope: guardian),
-              meta: {
-                total: total_count,
-                page: page,
-                page_size: page_size,
-                has_more: (page + 1) * page_size < total_count,
-              },
+              topics: serialized_topics,
+              stats: stats,
             }
+    
     rescue Discourse::InvalidAccess
       render json: { error: "You do not have permission to view this" }, status: :forbidden
     rescue Discourse::NotFound
@@ -123,6 +151,6 @@ after_initialize do
   end
 
   Discourse::Application.routes.append do
-    get "api/categories/:id/topics" => "categories#topics", :defaults => { format: :json }
+    get "api/categories/:id/topics/:year" => "categories#topics", :defaults => { format: :json }
   end
 end
