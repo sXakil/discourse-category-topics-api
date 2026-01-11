@@ -1,0 +1,4 @@
+plugins:
+  category_topics_api_enabled:
+    default: true
+    client: true
