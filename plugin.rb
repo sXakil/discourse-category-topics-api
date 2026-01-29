@@ -54,8 +54,6 @@ after_initialize do
   class ::CategoriesController
     requires_plugin "discourse-custom-api"
 
-    requires_login except: [:topics]
-
     before_action :check_rate_limit, only: [:topics]
 
     def check_rate_limit
